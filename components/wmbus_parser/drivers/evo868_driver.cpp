@@ -1,4 +1,4 @@
-#include "esphome/components/wmbus_parser/drivers/evo868_driver.h"
+#include "evo868_driver.h"
 #include "esphome/core/log.h"
 #include <ctime>
 #include <sstream>
