@@ -8,7 +8,7 @@ DEPENDENCIES = []
 # Namespace and C++ classes
 wmbus_parser_ns = cg.esphome_ns.namespace('wmbus_parser')
 WMBusParser = wmbus_parser_ns.class_('WMBusParser', cg.Component)
-WMBusMeter = wmbus_parser_ns.class_('WMBusMeter')
+WMBusMeter = wmbus_parser_ns.class_('WMBusMeter', cg.Component)
 
 # YAML keys
 CONF_METERS = 'meters'
