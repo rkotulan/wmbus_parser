@@ -5,7 +5,7 @@
 #include <map>
 #include <memory>
 
-#include "drivers/evo868_driver.h"
+#include "esphome/components/wmbus_parser/drivers/evo868_driver.h"
 
 namespace esphome {
 namespace wmbus_parser {
