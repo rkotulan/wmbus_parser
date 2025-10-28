@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome.const import CONF_ID
+from esphome.const import CONF_ID, DEVICE_CLASS_WATER, STATE_CLASS_TOTAL_INCREASING
 
 DEPENDENCIES = []
 
@@ -19,6 +19,9 @@ CONF_TOTAL_M3 = 'total_m3'
 TOTAL_M3_SCHEMA = sensor.sensor_schema(
     unit_of_measurement='m³',
     accuracy_decimals=3,
+    icon='mdi:gauge',
+    state_class=STATE_CLASS_TOTAL_INCREASING,
+    device_class=DEVICE_CLASS_WATER,
 )
 
 METER_SCHEMA = cv.Schema({
