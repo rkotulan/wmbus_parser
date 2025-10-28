@@ -38,9 +38,9 @@ async def to_code(config):
     await cg.register_component(parser, config)
 
     for meter in config[CONF_METERS]:
-        # Create C++ instance of WMBusMeter (uses its ID as pointer name)
+        # předáváme meter_id a driver konstruktoru, ID handle je meter[CONF_ID]
         m = cg.new_Pvariable(meter[CONF_ID], meter[CONF_METER_ID], meter[CONF_DRIVER])
-        await cg.register_component(m, meter)
+        await cg.register_component(m, meter)  # teď funguje, pokud WMBusMeter dědí z Component
         cg.add(parser.add_meter(m))
 
         if CONF_TOTAL_M3 in meter:
