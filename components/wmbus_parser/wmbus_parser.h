@@ -39,14 +39,24 @@ class WMBusParser : public Component {
   void setup() override {}
   void loop() override {}
 
+  enum class RawLogLevel {
+    RAW_LOG_LEVEL_NONE = 0,
+    RAW_LOG_LEVEL_ALL,
+    RAW_LOG_LEVEL_VALID_C1_HEADER,
+    RAW_LOG_LEVEL_MATCHING_METER_ID,
+  };
+
   // Register meter created from Python to_code()
   void add_meter(WMBusMeter *meter);
 
   // Expose method that can be called from lambda: id(wmbus_parser)->receive_packet(x)
   void receive_packet(const std::vector<uint8_t> &raw);
 
+  void set_raw_log_level(RawLogLevel level);
+
  protected:
   std::vector<WMBusMeter*> meters_;
+  RawLogLevel raw_log_level_{RawLogLevel::RAW_LOG_LEVEL_NONE};
 };
 
 }  // namespace wmbus_parser
