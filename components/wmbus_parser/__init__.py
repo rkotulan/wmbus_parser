@@ -38,15 +38,12 @@ async def to_code(config):
     await cg.register_component(parser, config)
 
     for meter in config[CONF_METERS]:
-        # Create meter instance (constructor: id_str, meter_id_str, driver_str)
-        m = cg.new_Pvariable(WMBusMeter,
-                             meter[CONF_ID],           # this is an ID object (declared above)
-                             meter[CONF_METER_ID],
-                             meter[CONF_DRIVER])
-        # register meter with parser
+        # Create C++ instance of WMBusMeter (uses its ID as pointer name)
+        m = cg.new_Pvariable(meter[CONF_ID], meter[CONF_METER_ID], meter[CONF_DRIVER])
+        await cg.register_component(m, meter)
         cg.add(parser.add_meter(m))
 
-        # If a total_m3 sensor is requested, create it and attach
         if CONF_TOTAL_M3 in meter:
             sens = await sensor.new_sensor(meter[CONF_TOTAL_M3])
             cg.add(m.set_total_m3(sens))
+
