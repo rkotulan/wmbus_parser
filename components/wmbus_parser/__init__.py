@@ -9,12 +9,21 @@ DEPENDENCIES = []
 wmbus_parser_ns = cg.esphome_ns.namespace('wmbus_parser')
 WMBusParser = wmbus_parser_ns.class_('WMBusParser', cg.Component)
 WMBusMeter = wmbus_parser_ns.class_('WMBusMeter', cg.Component)
+RawLogLevel = wmbus_parser_ns.enum('RawLogLevel')
 
 # YAML keys
 CONF_METERS = 'meters'
 CONF_METER_ID = 'meter_id'
 CONF_DRIVER = 'driver'
 CONF_TOTAL_M3 = 'total_m3'
+CONF_RAW_LOG_LEVEL = 'raw_log_level'
+
+RAW_LOG_LEVELS = {
+    'NONE': RawLogLevel.RAW_LOG_LEVEL_NONE,
+    'ALL': RawLogLevel.RAW_LOG_LEVEL_ALL,
+    'VALID_C1': RawLogLevel.RAW_LOG_LEVEL_VALID_C1_HEADER,
+    'METER_ID': RawLogLevel.RAW_LOG_LEVEL_MATCHING_METER_ID,
+}
 
 TOTAL_M3_SCHEMA = sensor.sensor_schema(
     unit_of_measurement='m³',
@@ -34,6 +43,7 @@ METER_SCHEMA = cv.Schema({
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(WMBusParser),
     cv.Required(CONF_METERS): cv.ensure_list(METER_SCHEMA),
+    cv.Optional(CONF_RAW_LOG_LEVEL, default='NONE'): cv.enum(RAW_LOG_LEVELS, upper=True),
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
@@ -49,4 +59,6 @@ async def to_code(config):
         if CONF_TOTAL_M3 in meter:
             sens = await sensor.new_sensor(meter[CONF_TOTAL_M3])
             cg.add(m.set_total_m3(sens))
+
+    cg.add(parser.set_raw_log_level(config[CONF_RAW_LOG_LEVEL]))
 

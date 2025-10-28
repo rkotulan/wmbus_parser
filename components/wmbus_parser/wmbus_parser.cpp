@@ -1,5 +1,23 @@
 #include "wmbus_parser.h"
 #include "esphome/core/log.h"
+#include <cstdio>
+
+namespace {
+
+std::string format_raw_hex(const std::vector<uint8_t> &raw) {
+  std::string hex;
+  hex.reserve(raw.size() * 3);
+  char buf[4];
+  for (size_t i = 0; i < raw.size(); ++i) {
+    snprintf(buf, sizeof(buf), "%02X", raw[i]);
+    hex += buf;
+    if (i + 1 < raw.size())
+      hex += ' ';
+  }
+  return hex;
+}
+
+}  // namespace
 
 namespace esphome {
 namespace wmbus_parser {
@@ -47,6 +65,8 @@ void WMBusParser::add_meter(WMBusMeter *meter) {
            meter->id_.c_str(), meter->meter_id_.c_str(), meter->driver_.c_str());
 }
 
+void WMBusParser::set_raw_log_level(RawLogLevel level) { this->raw_log_level_ = level; }
+
 void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
   // Determine meter id inside packet (after header bytes)
   if (raw.size() < 10) {
@@ -54,7 +74,19 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
     return;
   }
   size_t offset = 0;
-  if (raw.size() >= 2 && raw[0] == 0x54 && (raw[1] == 0x3D || raw[1] == 0xCD)) offset = 2;
+  bool has_c1_header = raw.size() >= 2 && raw[0] == 0x54 && (raw[1] == 0x3D || raw[1] == 0xCD);
+
+  if (this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_ALL ||
+      (this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_VALID_C1_HEADER && has_c1_header)) {
+    std::string hex = format_raw_hex(raw);
+    const char *suffix = this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_VALID_C1_HEADER
+                             ? " (valid C1 header)"
+                             : "";
+    ESP_LOGD(TAG, "Raw telegram%s: %s", suffix, hex.c_str());
+  }
+
+  if (has_c1_header)
+    offset = 2;
 
   if (raw.size() < offset + 8) {
     ESP_LOGW(TAG, "Packet too short for id extraction");
@@ -69,6 +101,10 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
   // Find registered meter(s) matching meter_id_
   for (auto *m : this->meters_) {
     if (m->meter_id_ == meter_id_str) {
+      if (this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_MATCHING_METER_ID) {
+        std::string hex = format_raw_hex(raw);
+        ESP_LOGD(TAG, "Raw telegram for meter %s: %s", meter_id_str.c_str(), hex.c_str());
+      }
       ESP_LOGI(TAG, "Packet for meter %s (instance %s)", meter_id_str.c_str(), m->id_.c_str());
       m->handle_packet(raw);
       return;
