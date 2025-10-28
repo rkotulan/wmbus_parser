@@ -1,49 +1,52 @@
 #pragma once
-#include "esphome/core/component.h"
-#include "esphome/components/sensor/sensor.h"
-#include "esphome/core/log.h"
-#include <map>
-#include <string>
+#include "esphome.h"
 #include <vector>
+#include <string>
+#include <map>
 #include <memory>
+
+#include "drivers/evo868_driver.h"
 
 namespace esphome {
 namespace wmbus_parser {
 
-class WMBusDriverBase {
+class WMBusMeter : public Component {
  public:
-  virtual ~WMBusDriverBase() = default;
-  virtual bool decode(const std::vector<uint8_t> &data,
-                      std::map<std::string, std::string> &attributes,
-                      float &main_value) = 0;
-};
+  WMBusMeter(const std::string &id, const std::string &meter_id, const std::string &driver);
+  void setup() override {}
+  void loop() override {}
 
-class Evo868Driver : public WMBusDriverBase {
- public:
-  bool decode(const std::vector<uint8_t> &data,
-              std::map<std::string, std::string> &attributes,
-              float &main_value) override;
+  // Bind sensor (called from Python codegen)
+  void set_total_m3(sensor::Sensor *sensor);
+
+  // Called by parser when a raw packet for this meter is available
+  void handle_packet(const std::vector<uint8_t> &raw);
+
+  // Public members
+  std::string id_;
+  std::string meter_id_;
+  std::string driver_;
+  sensor::Sensor *total_m3_sensor_{nullptr};
 
  private:
-  uint32_t le_to_uint32(const uint8_t *ptr);
-  std::string bytes_to_hex(const uint8_t *data, size_t len, bool reverse = false);
-  std::string get_timestamp();
+  // decode via driver
+  bool decode_packet(const std::vector<uint8_t> &raw, std::map<std::string, std::string> &attrs, float &value);
 };
 
-struct WMBusMeter {
-  std::string id;
-  std::string driver;
-  sensor::Sensor *sensor;
-};
-
-class WMBusParserComponent : public Component {
+class WMBusParser : public Component {
  public:
-  void add_meter(const WMBusMeter &meter);
-  void decode_packet(const std::vector<uint8_t> &raw);
+  WMBusParser() {}
+  void setup() override {}
+  void loop() override {}
+
+  // Register meter created from Python to_code()
+  void add_meter(WMBusMeter *meter);
+
+  // Expose method that can be called from lambda: id(wmbus_parser)->receive_packet(x)
+  void receive_packet(const std::vector<uint8_t> &raw);
 
  protected:
-  std::map<std::string, WMBusMeter> meters_;
-  std::map<std::string, std::shared_ptr<WMBusDriverBase>> drivers_;
+  std::vector<WMBusMeter*> meters_;
 };
 
 }  // namespace wmbus_parser

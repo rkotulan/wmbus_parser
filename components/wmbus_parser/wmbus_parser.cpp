@@ -6,56 +6,76 @@ namespace wmbus_parser {
 
 static const char *TAG = "wmbus_parser";
 
-void WMBusParserComponent::add_meter(const WMBusMeter &meter) {
-  meters_[meter.id] = meter;
-  if (drivers_.find(meter.driver) == drivers_.end()) {
-    if (meter.driver == "evo868") {
-      drivers_[meter.driver] = std::make_shared<Evo868Driver>();
-      ESP_LOGI(TAG, "Registered driver: evo868");
-    }
-  }
-  ESP_LOGI(TAG, "Registered meter %s (%s)", meter.id.c_str(), meter.driver.c_str());
+WMBusMeter::WMBusMeter(const std::string &id, const std::string &meter_id, const std::string &driver)
+    : id_(id), meter_id_(meter_id), driver_(driver) {}
+
+void WMBusMeter::set_total_m3(sensor::Sensor *sensor) {
+  this->total_m3_sensor_ = sensor;
 }
 
-void WMBusParserComponent::decode_packet(const std::vector<uint8_t> &raw) {
+bool WMBusMeter::decode_packet(const std::vector<uint8_t> &raw, std::map<std::string, std::string> &attrs, float &value) {
+  // Currently only evo868 driver implemented
+  if (driver_ == "evo868") {
+    return evo868::Evo868Driver::decode(raw, attrs, value);
+  }
+  ESP_LOGW(TAG, "Driver not supported: %s", driver_.c_str());
+  return false;
+}
+
+void WMBusMeter::handle_packet(const std::vector<uint8_t> &raw) {
+  std::map<std::string, std::string> attrs;
+  float main_value = NAN;
+
+  if (!this->decode_packet(raw, attrs, main_value)) {
+    ESP_LOGW(TAG, "Failed to decode packet for meter %s", this->meter_id_.c_str());
+    return;
+  }
+
+  // publish main sensor + attributes if sensor configured
+  if (this->total_m3_sensor_ != nullptr) {
+    // sensor::Sensor::publish_state_with_attributes expects a map<string,string>
+    this->total_m3_sensor_->publish_state_with_attributes(main_value, attrs);
+  } else {
+    // no sensor configured -> just log
+    ESP_LOGI(TAG, "Meter %s decoded (no sensor): total=%.3f", this->meter_id_.c_str(), main_value);
+  }
+}
+
+void WMBusParser::add_meter(WMBusMeter *meter) {
+  this->meters_.push_back(meter);
+  ESP_LOGI(TAG, "Added meter id=%s meter_id=%s driver=%s",
+           meter->id_.c_str(), meter->meter_id_.c_str(), meter->driver_.c_str());
+}
+
+void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
+  // Determine meter id inside packet (after header bytes)
   if (raw.size() < 10) {
     ESP_LOGW(TAG, "Packet too short");
     return;
   }
+  size_t offset = 0;
+  if (raw.size() >= 2 && raw[0] == 0x54 && (raw[1] == 0x3D || raw[1] == 0xCD)) offset = 2;
 
-  // Skip prefix (0x54 0x3D or 0x54 0xCD)
-  std::vector<uint8_t> data = raw;
-  if (data[0] == 0x54 && (data[1] == 0x3D || data[1] == 0xCD))
-    data.erase(data.begin(), data.begin() + 2);
+  if (raw.size() < offset + 8) {
+    ESP_LOGW(TAG, "Packet too short for id extraction");
+    return;
+  }
 
-  // Extract Meter ID (bytes 4..7 reversed)
+  const std::vector<uint8_t> data(raw.begin() + offset, raw.end());
   char id_buf[9];
   sprintf(id_buf, "%02X%02X%02X%02X", data[7], data[6], data[5], data[4]);
-  std::string meter_id(id_buf);
+  std::string meter_id_str(id_buf);
 
-  auto it = meters_.find(meter_id);
-  if (it == meters_.end()) {
-    ESP_LOGW(TAG, "Unknown meter ID: %s", meter_id.c_str());
-    return;
+  // Find registered meter(s) matching meter_id_
+  for (auto *m : this->meters_) {
+    if (m->meter_id_ == meter_id_str) {
+      ESP_LOGI(TAG, "Packet for meter %s (instance %s)", meter_id_str.c_str(), m->id_.c_str());
+      m->handle_packet(raw);
+      return;
+    }
   }
 
-  auto &meter = it->second;
-  auto drv_it = drivers_.find(meter.driver);
-  if (drv_it == drivers_.end()) {
-    ESP_LOGE(TAG, "Driver not found for %s", meter.driver.c_str());
-    return;
-  }
-
-  std::map<std::string, std::string> attrs;
-  float main_value = NAN;
-
-  if (drv_it->second->decode(data, attrs, main_value)) {
-    ESP_LOGI(TAG, "Meter %s total_m3=%.3f", meter_id.c_str(), main_value);
-    if (meter.sensor != nullptr)
-      meter.sensor->publish_state_with_attributes(main_value, attrs);
-  } else {
-    ESP_LOGW(TAG, "Failed to decode telegram for meter %s", meter_id.c_str());
-  }
+  ESP_LOGW(TAG, "No registered meter found for id %s", meter_id_str.c_str());
 }
 
 }  // namespace wmbus_parser

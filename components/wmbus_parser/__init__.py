@@ -5,49 +5,48 @@ from esphome.const import CONF_ID
 
 DEPENDENCIES = []
 
-# Namespace a C++ komponenta
+# Namespace and C++ classes
 wmbus_parser_ns = cg.esphome_ns.namespace('wmbus_parser')
 WMBusParser = wmbus_parser_ns.class_('WMBusParser', cg.Component)
+WMBusMeter = wmbus_parser_ns.class_('WMBusMeter')
 
-# Konstanta pro YAML klíče
+# YAML keys
 CONF_METERS = 'meters'
 CONF_METER_ID = 'meter_id'
 CONF_DRIVER = 'driver'
 CONF_TOTAL_M3 = 'total_m3'
 
-# Schéma senzoru total_m3
 TOTAL_M3_SCHEMA = sensor.sensor_schema(
     unit_of_measurement='m³',
     accuracy_decimals=3,
 )
 
-# Schéma jednoho měřiče
 METER_SCHEMA = cv.Schema({
-    cv.Required(CONF_ID): cv.use_id(WMBusParser),
+    cv.Required(CONF_ID): cv.declare_id(WMBusMeter),   # declares child instance id
     cv.Required(CONF_METER_ID): cv.string,
     cv.Required(CONF_DRIVER): cv.string,
     cv.Optional(CONF_TOTAL_M3): TOTAL_M3_SCHEMA,
 })
 
-# Hlavní konfigurace komponenty
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(WMBusParser),
     cv.Required(CONF_METERS): cv.ensure_list(METER_SCHEMA),
 }).extend(cv.COMPONENT_SCHEMA)
 
-# Funkce která převádí YAML na C++ kód
-def to_code(config):
+async def to_code(config):
     parser = cg.new_Pvariable(config[CONF_ID])
-    cg.add_global(parser)
+    await cg.register_component(parser, config)
 
     for meter in config[CONF_METERS]:
-        # Vytvoření meter instance v C++
-        meter_obj = parser.add_meter(
-            meter[CONF_ID],       # ID meter instance, musí odpovídat YAML id
-            meter[CONF_METER_ID],
-            meter[CONF_DRIVER],
-        )
+        # Create meter instance (constructor: id_str, meter_id_str, driver_str)
+        m = cg.new_Pvariable(WMBusMeter,
+                             meter[CONF_ID],           # this is an ID object (declared above)
+                             meter[CONF_METER_ID],
+                             meter[CONF_DRIVER])
+        # register meter with parser
+        cg.add(parser.add_meter(m))
 
-        # Pokud je definován sensor total_m3, připojíme ho k meter
+        # If a total_m3 sensor is requested, create it and attach
         if CONF_TOTAL_M3 in meter:
-            sensor.Pvariable(meter[CONF_TOTAL_M3], meter_obj.set_total_m3)
+            sens = await sensor.new_sensor(meter[CONF_TOTAL_M3])
+            cg.add(m.set_total_m3(sens))

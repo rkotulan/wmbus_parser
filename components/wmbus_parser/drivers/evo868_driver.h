@@ -1,23 +1,28 @@
 #pragma once
-#include "../wmbus_parser.h"
-#include <string>
+#include "esphome.h"
 #include <vector>
+#include <string>
 #include <map>
 
 namespace esphome {
 namespace wmbus_parser {
+namespace evo868 {
 
-class Evo868Driver : public WMBusDriverBase {
+class Evo868Driver {
  public:
-  bool decode(const std::vector<uint8_t> &data,
-              std::map<std::string, std::string> &attributes,
-              float &main_value) override;
+  // Decode returns true on success, fills attributes map and main_value (m3)
+  static bool decode(const std::vector<uint8_t> &raw,
+                     std::map<std::string, std::string> &attributes,
+                     float &main_value);
 
  private:
-  uint32_t le_to_uint32(const uint8_t *ptr);
-  std::string bytes_to_hex(const uint8_t *data, size_t len, bool reverse = false);
-  std::string get_timestamp();
+  static uint32_t le_to_uint32(const uint8_t *ptr);
+  static std::string bytes_to_hex(const uint8_t *data, size_t len, bool reverse = false);
+  static std::string bcd_to_date_str(const uint8_t *data, size_t len);
+  static int bcd_to_int(uint8_t v);
+  static std::string get_timestamp();
 };
 
+}  // namespace evo868
 }  // namespace wmbus_parser
 }  // namespace esphome
