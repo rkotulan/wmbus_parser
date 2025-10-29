@@ -5,7 +5,15 @@
 #include <map>
 #include <memory>
 
-#include "drivers/evo868_driver.h"
+// Include the driver header using its full component path so builds that
+// only add the component root to the include directories can still locate it.
+// Some ESPHome build environments (e.g. PlatformIO) mirror the component
+// structure under src/esphome/components without copying the intermediate
+// directories to the include search path, which caused
+// "drivers/evo868_driver.h" to be unresolved during compilation.  Using the
+// fully-qualified path keeps the header discoverable regardless of how the
+// component is packaged.
+#include "esphome/components/wmbus_parser/drivers/evo868_driver.h"
 
 namespace esphome {
 namespace wmbus_parser {
