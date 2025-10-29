@@ -24,6 +24,9 @@ namespace wmbus_parser {
 
 static const char *TAG = "wmbus_parser";
 
+WMBusMeter::WMBusMeter(const std::string &meter_id, const std::string &driver)
+    : WMBusMeter(meter_id, meter_id, driver) {}
+
 WMBusMeter::WMBusMeter(const std::string &id, const std::string &meter_id, const std::string &driver)
     : id_(id), meter_id_(meter_id), driver_(driver) {}
 
@@ -51,8 +54,12 @@ void WMBusMeter::handle_packet(const std::vector<uint8_t> &raw) {
 
   // publish main sensor + attributes if sensor configured
   if (this->total_m3_sensor_ != nullptr) {
-    // sensor::Sensor::publish_state_with_attributes expects a map<string,string>
-    this->total_m3_sensor_->publish_state_with_attributes(main_value, attrs);
+    this->total_m3_sensor_->publish_state(main_value);
+    if (!attrs.empty()) {
+      for (const auto &kv : attrs) {
+        ESP_LOGD(TAG, "  %s: %s", kv.first.c_str(), kv.second.c_str());
+      }
+    }
   } else {
     // no sensor configured -> just log
     ESP_LOGI(TAG, "Meter %s decoded (no sensor): total=%.3f", this->meter_id_.c_str(), main_value);
@@ -76,10 +83,10 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
   size_t offset = 0;
   bool has_c1_header = raw.size() >= 2 && raw[0] == 0x54 && (raw[1] == 0x3D || raw[1] == 0xCD);
 
-  if (this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_ALL ||
-      (this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_VALID_C1_HEADER && has_c1_header)) {
+  if (this->raw_log_level_ == RAW_LOG_LEVEL_ALL ||
+      (this->raw_log_level_ == RAW_LOG_LEVEL_VALID_C1_HEADER && has_c1_header)) {
     std::string hex = format_raw_hex(raw);
-    const char *suffix = this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_VALID_C1_HEADER
+    const char *suffix = this->raw_log_level_ == RAW_LOG_LEVEL_VALID_C1_HEADER
                              ? " (valid C1 header)"
                              : "";
     ESP_LOGD(TAG, "Raw telegram%s: %s", suffix, hex.c_str());
@@ -101,7 +108,7 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
   // Find registered meter(s) matching meter_id_
   for (auto *m : this->meters_) {
     if (m->meter_id_ == meter_id_str) {
-      if (this->raw_log_level_ == RawLogLevel::RAW_LOG_LEVEL_MATCHING_METER_ID) {
+      if (this->raw_log_level_ == RAW_LOG_LEVEL_MATCHING_METER_ID) {
         std::string hex = format_raw_hex(raw);
         ESP_LOGD(TAG, "Raw telegram for meter %s: %s", meter_id_str.c_str(), hex.c_str());
       }

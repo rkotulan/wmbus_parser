@@ -10,8 +10,23 @@
 namespace esphome {
 namespace wmbus_parser {
 
+enum class RawLogLevel {
+  RAW_LOG_LEVEL_NONE = 0,
+  RAW_LOG_LEVEL_ALL,
+  RAW_LOG_LEVEL_VALID_C1_HEADER,
+  RAW_LOG_LEVEL_MATCHING_METER_ID,
+};
+
+// Compatibility aliases so generated code can refer to the enum values via
+// ``wmbus_parser::RAW_LOG_LEVEL_*``.
+inline constexpr RawLogLevel RAW_LOG_LEVEL_NONE = RawLogLevel::RAW_LOG_LEVEL_NONE;
+inline constexpr RawLogLevel RAW_LOG_LEVEL_ALL = RawLogLevel::RAW_LOG_LEVEL_ALL;
+inline constexpr RawLogLevel RAW_LOG_LEVEL_VALID_C1_HEADER = RawLogLevel::RAW_LOG_LEVEL_VALID_C1_HEADER;
+inline constexpr RawLogLevel RAW_LOG_LEVEL_MATCHING_METER_ID = RawLogLevel::RAW_LOG_LEVEL_MATCHING_METER_ID;
+
 class WMBusMeter : public Component {
  public:
+  WMBusMeter(const std::string &meter_id, const std::string &driver);
   WMBusMeter(const std::string &id, const std::string &meter_id, const std::string &driver);
   void setup() override {}
   void loop() override {}
@@ -38,13 +53,6 @@ class WMBusParser : public Component {
   WMBusParser() {}
   void setup() override {}
   void loop() override {}
-
-  enum class RawLogLevel {
-    RAW_LOG_LEVEL_NONE = 0,
-    RAW_LOG_LEVEL_ALL,
-    RAW_LOG_LEVEL_VALID_C1_HEADER,
-    RAW_LOG_LEVEL_MATCHING_METER_ID,
-  };
 
   // Register meter created from Python to_code()
   void add_meter(WMBusMeter *meter);
