@@ -1,4 +1,4 @@
-#include "wmbus_parser.h"
+#include "esphome/components/wmbus_parser/wmbus_parser.h"
 #include "esphome/core/log.h"
 #include <cstdio>
 
