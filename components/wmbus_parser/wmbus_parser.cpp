@@ -53,11 +53,11 @@ void WMBusMeter::handle_packet(const std::vector<uint8_t> &raw) {
 
   if (this->total_m3_sensor_ != nullptr) {
     this->total_m3_sensor_->publish_state(main_value);
-    if (!attrs.empty()) {
-      for (const auto &kv : attrs) {
-        ESP_LOGD(TAG, "  %s: %s", kv.first.c_str(), kv.second.c_str());
-      }
-    }
+    // if (!attrs.empty()) {
+    //   for (const auto &kv : attrs) {
+    //     ESP_LOGD(TAG, "  %s: %s", kv.first.c_str(), kv.second.c_str());
+    //   }
+    // }
   } else {
     ESP_LOGI(TAG, "Meter %s decoded (no sensor): total=%.3f", this->meter_id_.c_str(), main_value);
   }
