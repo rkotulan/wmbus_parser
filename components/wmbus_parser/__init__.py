@@ -1,7 +1,8 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
+from esphome import automation
 from esphome.components import sensor
-from esphome.const import CONF_ID, DEVICE_CLASS_WATER, STATE_CLASS_TOTAL_INCREASING
+from esphome.const import CONF_ID, CONF_TRIGGER_ID, DEVICE_CLASS_WATER, STATE_CLASS_TOTAL_INCREASING
 
 DEPENDENCIES = []
 
@@ -17,6 +18,7 @@ CONF_METER_ID = 'meter_id'
 CONF_DRIVER = 'driver'
 CONF_TOTAL_M3 = 'total_m3'
 CONF_RAW_LOG_LEVEL = 'raw_log_level'
+CONF_ON_DECODE = 'on_decode'
 
 RAW_LOG_LEVELS = {
     'NONE': RawLogLevel.RAW_LOG_LEVEL_NONE,
@@ -24,6 +26,10 @@ RAW_LOG_LEVELS = {
     'VALID_C1': RawLogLevel.RAW_LOG_LEVEL_VALID_C1_HEADER,
     'METER_ID': RawLogLevel.RAW_LOG_LEVEL_MATCHING_METER_ID,
 }
+
+attribute_list = cg.std_vector.template(cg.std_string)
+
+WMBusParserDecodeTrigger = wmbus_parser_ns.class_('WMBusParserDecodeTrigger', automation.Trigger.template(cg.float_, attribute_list, cg.std_string))
 
 TOTAL_M3_SCHEMA = sensor.sensor_schema(
     unit_of_measurement='m³',
@@ -44,6 +50,9 @@ CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(WMBusParser),
     cv.Required(CONF_METERS): cv.ensure_list(METER_SCHEMA),
     cv.Optional(CONF_RAW_LOG_LEVEL, default='NONE'): cv.enum(RAW_LOG_LEVELS, upper=True),
+    cv.Optional(CONF_ON_DECODE): automation.validate_automation({
+        cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(WMBusParserDecodeTrigger),
+    }),
 }).extend(cv.COMPONENT_SCHEMA)
 
 async def to_code(config):
@@ -61,4 +70,13 @@ async def to_code(config):
             cg.add(m.set_total_m3(sens))
 
     cg.add(parser.set_raw_log_level(config[CONF_RAW_LOG_LEVEL]))
+
+    if CONF_ON_DECODE in config:
+        for conf in config[CONF_ON_DECODE]:
+            trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], parser)
+            await automation.build_automation(trigger, [
+                (cg.float_, 'value'),
+                (attribute_list, 'attributes'),
+                (cg.std_string, 'meter_id'),
+            ], conf)
 

@@ -29,6 +29,8 @@ WMBusMeter::WMBusMeter(const std::string &meter_id, const std::string &driver)
 WMBusMeter::WMBusMeter(const std::string &id, const std::string &meter_id, const std::string &driver)
     : id_(id), meter_id_(meter_id), driver_(driver) {}
 
+void WMBusMeter::set_parent(WMBusParser *parent) { this->parent_ = parent; }
+
 void WMBusMeter::set_total_m3(sensor::Sensor *sensor) { this->total_m3_sensor_ = sensor; }
 
 bool WMBusMeter::decode_packet(const std::vector<uint8_t> &raw, std::map<std::string, std::string> &attrs, float &value) {
@@ -59,9 +61,19 @@ void WMBusMeter::handle_packet(const std::vector<uint8_t> &raw) {
   } else {
     ESP_LOGI(TAG, "Meter %s decoded (no sensor): total=%.3f", this->meter_id_.c_str(), main_value);
   }
+
+  AttributeList attr_list;
+  attr_list.reserve(attrs.size());
+  for (const auto &kv : attrs) {
+    attr_list.emplace_back(kv.first + "=" + kv.second);
+  }
+  if (this->parent_ != nullptr) {
+    this->parent_->fire_on_decode(this->meter_id_, main_value, attr_list);
+  }
 }
 
 void WMBusParser::add_meter(WMBusMeter *meter) {
+  meter->set_parent(this);
   this->meters_.push_back(meter);
   ESP_LOGI(TAG, "Added meter id=%s meter_id=%s driver=%s", meter->id_.c_str(), meter->meter_id_.c_str(), meter->driver_.c_str());
 }
@@ -110,6 +122,14 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
   }
 
   ESP_LOGW(TAG, "No registered meter found for id %s", meter_id_str.c_str());
+}
+
+void WMBusParser::add_on_decode_trigger(WMBusParserDecodeTrigger *trigger) { this->decode_triggers_.push_back(trigger); }
+
+void WMBusParser::fire_on_decode(const std::string &meter_id, float value, const AttributeList &attrs) {
+  for (auto *trigger : this->decode_triggers_) {
+    trigger->trigger(value, attrs, meter_id);
+  }
 }
 
 }  // namespace wmbus_parser
