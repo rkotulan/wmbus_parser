@@ -1,5 +1,6 @@
 #include "wmbus_parser.h"
 #include "esphome/core/log.h"
+#include "evo868_driver.h"
 #include <cstdio>
 
 namespace {
@@ -11,8 +12,6 @@ std::string format_raw_hex(const std::vector<uint8_t> &raw) {
   for (size_t i = 0; i < raw.size(); ++i) {
     snprintf(buf, sizeof(buf), "%02X", raw[i]);
     hex += buf;
-    if (i + 1 < raw.size())
-      hex += ' ';
   }
   return hex;
 }
@@ -30,17 +29,15 @@ WMBusMeter::WMBusMeter(const std::string &meter_id, const std::string &driver)
 WMBusMeter::WMBusMeter(const std::string &id, const std::string &meter_id, const std::string &driver)
     : id_(id), meter_id_(meter_id), driver_(driver) {}
 
-void WMBusMeter::set_total_m3(sensor::Sensor *sensor) {
-  this->total_m3_sensor_ = sensor;
-}
+void WMBusMeter::set_total_m3(sensor::Sensor *sensor) { this->total_m3_sensor_ = sensor; }
 
 bool WMBusMeter::decode_packet(const std::vector<uint8_t> &raw, std::map<std::string, std::string> &attrs, float &value) {
-  // Currently only evo868 driver implemented
-  if (driver_ == "evo868") {
-    return evo868::Evo868Driver::decode(raw, attrs, value);
+  auto decode_fn = DriverRegistry::instance().find(this->driver_);
+  if (decode_fn == nullptr) {
+    ESP_LOGW(TAG, "Driver not supported: %s", this->driver_.c_str());
+    return false;
   }
-  ESP_LOGW(TAG, "Driver not supported: %s", driver_.c_str());
-  return false;
+  return decode_fn(raw, attrs, value);
 }
 
 void WMBusMeter::handle_packet(const std::vector<uint8_t> &raw) {
@@ -52,7 +49,6 @@ void WMBusMeter::handle_packet(const std::vector<uint8_t> &raw) {
     return;
   }
 
-  // publish main sensor + attributes if sensor configured
   if (this->total_m3_sensor_ != nullptr) {
     this->total_m3_sensor_->publish_state(main_value);
     if (!attrs.empty()) {
@@ -61,21 +57,18 @@ void WMBusMeter::handle_packet(const std::vector<uint8_t> &raw) {
       }
     }
   } else {
-    // no sensor configured -> just log
     ESP_LOGI(TAG, "Meter %s decoded (no sensor): total=%.3f", this->meter_id_.c_str(), main_value);
   }
 }
 
 void WMBusParser::add_meter(WMBusMeter *meter) {
   this->meters_.push_back(meter);
-  ESP_LOGI(TAG, "Added meter id=%s meter_id=%s driver=%s",
-           meter->id_.c_str(), meter->meter_id_.c_str(), meter->driver_.c_str());
+  ESP_LOGI(TAG, "Added meter id=%s meter_id=%s driver=%s", meter->id_.c_str(), meter->meter_id_.c_str(), meter->driver_.c_str());
 }
 
 void WMBusParser::set_raw_log_level(RawLogLevel level) { this->raw_log_level_ = level; }
 
 void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
-  // Determine meter id inside packet (after header bytes)
   if (raw.size() < 10) {
     ESP_LOGW(TAG, "Packet too short");
     return;
@@ -83,12 +76,9 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
   size_t offset = 0;
   bool has_c1_header = raw.size() >= 2 && raw[0] == 0x54 && (raw[1] == 0x3D || raw[1] == 0xCD);
 
-  if (this->raw_log_level_ == RAW_LOG_LEVEL_ALL ||
-      (this->raw_log_level_ == RAW_LOG_LEVEL_VALID_C1_HEADER && has_c1_header)) {
+  if (this->raw_log_level_ == RAW_LOG_LEVEL_ALL || (this->raw_log_level_ == RAW_LOG_LEVEL_VALID_C1_HEADER && has_c1_header)) {
     std::string hex = format_raw_hex(raw);
-    const char *suffix = this->raw_log_level_ == RAW_LOG_LEVEL_VALID_C1_HEADER
-                             ? " (valid C1 header)"
-                             : "";
+    const char *suffix = has_c1_header ? " (valid C1 header)" : "";
     ESP_LOGD(TAG, "Raw telegram%s: %s", suffix, hex.c_str());
   }
 
@@ -105,7 +95,8 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
   sprintf(id_buf, "%02X%02X%02X%02X", data[7], data[6], data[5], data[4]);
   std::string meter_id_str(id_buf);
 
-  // Find registered meter(s) matching meter_id_
+  ESP_LOGI(TAG, "Meter id from telegram: %s", meter_id_str.c_str());
+
   for (auto *m : this->meters_) {
     if (m->meter_id_ == meter_id_str) {
       if (this->raw_log_level_ == RAW_LOG_LEVEL_MATCHING_METER_ID) {
@@ -123,3 +114,4 @@ void WMBusParser::receive_packet(const std::vector<uint8_t> &raw) {
 
 }  // namespace wmbus_parser
 }  // namespace esphome
+

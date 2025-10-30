@@ -1,215 +1,421 @@
 #include "evo868_driver.h"
+
+#include "driver_registry.h"
 #include "esphome/core/log.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <ctime>
-#include <sstream>
 #include <iomanip>
+#include <map>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace esphome {
 namespace wmbus_parser {
 namespace evo868 {
 
-static const char *TAG = "evo868_driver";
+namespace {
 
-uint32_t Evo868Driver::le_to_uint32(const uint8_t *ptr) {
-  return (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8) |
-         ((uint32_t)ptr[2] << 16) | ((uint32_t)ptr[3] << 24);
-}
+constexpr const char *TAG = "wmbus_parser.evo868";
 
-std::string Evo868Driver::bytes_to_hex(const uint8_t *data, size_t len, bool reverse) {
-  std::ostringstream ss;
-  ss << std::uppercase << std::hex << std::setfill('0');
-  if (reverse) {
-    for (int i = (int)len - 1; i >= 0; i--) ss << std::setw(2) << (int)data[i];
-  } else {
-    for (size_t i = 0; i < len; i++) ss << std::setw(2) << (int)data[i];
+struct Date {
+  int year{0};
+  int month{0};
+  int day{0};
+  bool valid{false};
+};
+
+struct DateTime {
+  int year{0};
+  int month{0};
+  int day{0};
+  int hour{0};
+  int minute{0};
+  bool valid{false};
+};
+
+inline uint32_t read_le_uint(const uint8_t *data, size_t len) {
+  uint32_t value = 0;
+  for (size_t i = 0; i < len; i++) {
+    value |= static_cast<uint32_t>(data[i]) << (8 * i);
   }
-  return ss.str();
+  return value;
 }
 
-int Evo868Driver::bcd_to_int(uint8_t v) {
-  return ((v >> 4) & 0x0F) * 10 + (v & 0x0F);
+inline std::string format_float(float value, int decimals = 3) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(decimals) << value;
+  std::string result = oss.str();
+  auto dot_pos = result.find('.');
+  if (dot_pos != std::string::npos) {
+    size_t end = result.size();
+    while (end > dot_pos + 1 && result[end - 1] == '0')
+      --end;
+    if (end > dot_pos + 1 && result[end - 1] == '.')
+      --end;
+    result.erase(end);
+  }
+  return result;
 }
 
-std::string Evo868Driver::bcd_to_date_str(const uint8_t *data, size_t len) {
-  // Basic conversion: attempt to map bytes to YYYY-MM-DD or DD-MM-YY depending on len
-  // This is heuristic and may be adjusted to exact device spec.
+inline std::string format_date(const Date &d) {
+  if (!d.valid)
+    return {};
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d", d.year, d.month, d.day);
+  return std::string(buf);
+}
+
+inline std::string format_datetime(const DateTime &dt) {
+  if (!dt.valid)
+    return {};
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", dt.year, dt.month, dt.day, dt.hour, dt.minute);
+  return std::string(buf);
+}
+
+inline std::string decode_bcd_string(const uint8_t *data, size_t len) {
+  if (data == nullptr || len == 0)
+    return {};
+  std::string digits;
+  digits.reserve(len * 2);
+  bool has_invalid = false;
+  for (size_t idx = len; idx-- > 0;) {
+    uint8_t value = data[idx];
+    uint8_t high = (value >> 4) & 0x0F;
+    uint8_t low = value & 0x0F;
+    if (high <= 9) {
+      digits.push_back(static_cast<char>('0' + high));
+    } else {
+      has_invalid = true;
+      digits.push_back('?');
+    }
+    if (low <= 9) {
+      digits.push_back(static_cast<char>('0' + low));
+    } else {
+      has_invalid = true;
+      digits.push_back('?');
+    }
+  }
+  if (has_invalid) {
+    std::ostringstream oss;
+    oss << std::uppercase << std::hex << std::setfill('0');
+    for (size_t idx = len; idx-- > 0;) {
+      oss << std::setw(2) << static_cast<int>(data[idx]);
+    }
+    return oss.str();
+  }
+  return digits;
+}
+
+inline Date decode_date_g(uint16_t raw) {
+  Date d;
+  d.day = raw & 0x1F;
+  d.month = (raw >> 8) & 0x0F;
+  int year_high = (raw >> 12) & 0x0F;
+  int year_low = (raw >> 5) & 0x07;
+  d.year = 2000 + ((year_high << 3) | year_low);
+  d.valid = d.day > 0 && d.month > 0;
+  return d;
+}
+
+inline DateTime decode_datetime_f(const uint8_t *data, size_t len) {
+  DateTime dt;
+  if (len < 4 || data == nullptr)
+    return dt;
+  dt.minute = data[0] & 0x3F;
+  dt.hour = data[1] & 0x1F;
+  dt.day = data[2] & 0x1F;
+  dt.month = data[3] & 0x0F;
+  int year_high = (data[3] >> 4) & 0x0F;
+  int year_low = (data[2] >> 5) & 0x07;
+  dt.year = 2000 + ((year_high << 3) | year_low);
+  dt.valid = dt.day > 0 && dt.month > 0;
+  return dt;
+}
+
+inline std::string format_error_flags(uint32_t flags) {
+  if (flags == 0)
+    return "OK";
   char buf[32];
-  if (len == 3) {
-    // YY MM DD -> produce YYYY-MM-DD
-    int yy = bcd_to_int(data[0]);
-    int mm = bcd_to_int(data[1]);
-    int dd = bcd_to_int(data[2]);
-    sprintf(buf, "%04d-%02d-%02d", 2000 + yy, mm, dd);
-    return std::string(buf);
-  } else if (len == 4) {
-    // YY MM DD HH -> produce YYYY-MM-DD HH:00
-    int yy = bcd_to_int(data[0]);
-    int mm = bcd_to_int(data[1]);
-    int dd = bcd_to_int(data[2]);
-    int hh = bcd_to_int(data[3]);
-    sprintf(buf, "%04d-%02d-%02d %02d:00", 2000 + yy, mm, dd, hh);
-    return std::string(buf);
-  } else if (len == 5) {
-    // YY MM DD HH MM
-    int yy = bcd_to_int(data[0]);
-    int mm = bcd_to_int(data[1]);
-    int dd = bcd_to_int(data[2]);
-    int hh = bcd_to_int(data[3]);
-    int mi = bcd_to_int(data[4]);
-    sprintf(buf, "%04d-%02d-%02d %02d:%02d", 2000 + yy, mm, dd, hh, mi);
-    return std::string(buf);
-  }
-  // fallback: hex representation
-  return bytes_to_hex(data, len, false);
+  snprintf(buf, sizeof(buf), "ERROR_FLAGS_%04X", flags & 0xFFFF);
+  return std::string(buf);
 }
 
-std::string Evo868Driver::get_timestamp() {
-  char buffer[32];
-  time_t now = time(nullptr);
-  struct tm *t = gmtime(&now);
-  strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", t);
-  return std::string(buffer);
+inline std::string current_timestamp() {
+  std::time_t now = std::time(nullptr);
+  std::tm tm {};
+#if defined(_WIN32) || defined(_WIN64)
+  gmtime_s(&tm, &now);
+#else
+  gmtime_r(&now, &tm);
+#endif
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+  return std::string(buf);
 }
+
+inline uint16_t data_field_length(uint8_t dif_code, const std::vector<uint8_t> &raw, size_t pos) {
+  static const uint8_t lengths[16] = {
+      0,  // 0: no data
+      1,  // 1: 8 bit integer
+      2,  // 2: 16 bit integer
+      3,  // 3: 24 bit integer
+      4,  // 4: 32 bit integer
+      6,  // 5: 48 bit integer
+      8,  // 6: 64 bit
+      0,  // 7: variable length (handled separately if needed)
+      0,  // 8: reserved
+      1,  // 9: 2 digit BCD
+      2,  // A: 4 digit BCD
+      3,  // B: 6 digit BCD
+      4,  // C: 8 digit BCD
+      6,  // D: 12 digit BCD
+      8,  // E: 16 digit BCD
+      0   // F: special functions
+  };
+  if (dif_code < 16) {
+    if (dif_code == 7) {
+      if (pos >= raw.size())
+        return 0;
+      return raw[pos];
+    }
+    return lengths[dif_code];
+  }
+  return 0;
+}
+
+inline uint16_t compute_storage_number(uint8_t dif, const std::vector<uint8_t> &difes) {
+  uint16_t storage = (dif >> 6) & 0x01;
+  uint16_t shift = 1;
+  for (uint8_t dife : difes) {
+    storage |= static_cast<uint16_t>(dife & 0x0F) << shift;
+    shift += 4;
+  }
+  return storage;
+}
+
+}  // namespace
 
 bool Evo868Driver::decode(const std::vector<uint8_t> &raw,
                           std::map<std::string, std::string> &attributes,
                           float &main_value) {
-  if (raw.size() < 44) {
-    ESP_LOGW(TAG, "raw too short: %d", (int)raw.size());
+  attributes.clear();
+  main_value = NAN;
+
+  if (raw.size() < 20) {
+    ESP_LOGW(TAG, "Telegram too short (%u bytes)", static_cast<unsigned>(raw.size()));
     return false;
   }
 
-  // Header check (flexible)
   size_t offset = 0;
   if (raw[0] == 0x54 && (raw[1] == 0x3D || raw[1] == 0xCD))
     offset = 2;
-  else {
-    ESP_LOGW(TAG, "Invalid header: %02X %02X", raw[0], raw[1]);
+
+  if (raw.size() <= offset + 15) {
+    ESP_LOGW(TAG, "Telegram header incomplete");
     return false;
   }
 
-  std::vector<uint8_t> data(raw.begin() + offset, raw.end());
+  size_t pos = offset;
+  pos += 1;  // L-field
+  pos += 1;  // C-field
+  pos += 2;  // manufacturer
+  pos += 6;  // address
+  pos += 1;  // CI-field
+  pos += 1;  // access number
+  pos += 1;  // status
+  pos += 2;  // config word
 
-  // id (DLL-ID at offset 4..7 reversed)
-  std::string id = bytes_to_hex(&data[4], 4, true);
-  attributes["id"] = id;
+  if (pos >= raw.size()) {
+    ESP_LOGW(TAG, "Unexpected end of telegram");
+    return false;
+  }
 
-  // total consumption @ offset 19..22 (LE, liters)
-  uint32_t raw_liters = le_to_uint32(&data[19]);
-  main_value = raw_liters / 1000.0f;
-  attributes["total_m3"] = to_string(main_value);
+  while (pos < raw.size() && raw[pos] == 0x2F)
+    ++pos;
 
-  // fabrication no. offset 38..43 (6 bytes, reversed BCD-ish)
-  attributes["fabrication_no"] = bytes_to_hex(&data[38], 6, true);
+  float total_m3 = NAN;
+  float consumption_set_date = NAN;
+  float consumption_set_date2 = NAN;
+  float max_flow_m3h = NAN;
+  std::map<uint16_t, float> history_volumes;
 
-  // basic attributes
-  attributes["driver"] = "evo868";
-  attributes["device"] = "wmbus_parser";
-  attributes["current_status"] = "OK";
-  attributes["timestamp"] = get_timestamp();
-  attributes["rssi_dbm"] = "999";
+  Date set_date;
+  Date set_date2;
+  Date history_reference_date;
+  DateTime device_datetime;
+  DateTime max_flow_datetime;
+  uint8_t history_interval_months = 1;
 
-  // history map: CI -> index
-  std::map<uint8_t, int> history_map = {
-    {0x82, 1}, {0x83, 2}, {0x84, 3}, {0x85, 4},
-    {0x86, 5}, {0x87, 6}, {0x88, 7}, {0x89, 8},
-    {0x8A, 9}, {0x8B, 10}, {0x8C, 11}, {0x8D, 12}
-  };
+  std::string fabrication_no;
+  bool status_present = false;
+  uint32_t status_flags = 0;
 
-  // scan payload for known CI blocks
-  for (size_t i = 0; i + 1 < data.size(); i++) {
-    uint8_t ci = data[i];
+  while (pos < raw.size()) {
+    uint8_t dif = raw[pos++];
 
-    // historical consumption blocks (4 bytes after CI)
-    auto hit = history_map.find(ci);
-    if (hit != history_map.end() && i + 4 < data.size()) {
-      float val = le_to_uint32(&data[i + 1]) / 1000.0f;
-      std::ostringstream k; k << "consumption_at_history_" << hit->second << "_m3";
-      attributes[k.str()] = to_string(val);
+    if (dif == 0x2F)
+      continue;
 
-      // if date info is available in defined spot, you can parse it here.
-      // For now, we will not infer date from arbitrary positions; users can refine mapping.
+    std::vector<uint8_t> difes;
+    if (dif & 0x80) {
+      bool more = true;
+      while (more && pos < raw.size()) {
+        uint8_t dife = raw[pos++];
+        difes.push_back(dife);
+        more = (dife & 0x80) != 0;
+      }
     }
 
-    // consumption at set date (CI 0x84 used in some devices for set)
-    if (ci == 0x84 && i + 4 < data.size()) {
-      float val = le_to_uint32(&data[i + 1]) / 1000.0f;
-      attributes["consumption_at_set_date_m3"] = to_string(val);
-    }
-    // consumption at set date 2 (CI 0xC4)
-    if (ci == 0xC4 && i + 4 < data.size()) {
-      float val = le_to_uint32(&data[i + 1]) / 1000.0f;
-      attributes["consumption_at_set_date_2_m3"] = to_string(val);
+    if (pos >= raw.size())
+      break;
+
+    uint8_t vif = raw[pos++];
+    std::vector<uint8_t> vifes;
+    if (vif & 0x80) {
+      bool more = true;
+      while (more && pos < raw.size()) {
+        uint8_t vife = raw[pos++];
+        vifes.push_back(vife);
+        more = (vife & 0x80) != 0;
+      }
     }
 
-    // max_flow_since_datetime (example CI 0xAB with 2-3 bytes)
-    if (ci == 0xAB && i + 3 < data.size()) {
-      // device specific scaling — here we attempt reasonable mapping
-      // For POC, interpret next 2 bytes as fixed-point value multiplied by 1000 -> m3/h
-      uint32_t rawv = (uint32_t)data[i + 1] | ((uint32_t)data[i + 2] << 8);
-      // scale heuristic: raw/ (2^? ) — but we know example -> 1.963, so keep placeholder conversion
-      // We'll attempt raw / 0x036F (~875) to get approx 1.96 for AB0700 -> raw = 0x0700 = 1792 => 1792/913 ~1.96
-      float mv = (float)rawv / 913.0f;
-      attributes["max_flow_since_datetime_m3h"] = to_string(mv);
+    uint8_t dif_code = dif & 0x0F;
+    uint16_t len = data_field_length(dif_code, raw, pos);
+    if (len == 0) {
+      if (dif_code == 0x07 && pos < raw.size()) {
+        len = raw[pos];
+        ++pos;
+      } else {
+        continue;
+      }
     }
 
-    // device date/time CI example 0x11 (4 bytes BCD-like)
-    if (ci == 0x11 && i + 4 < data.size()) {
-      // bytes: [i+1]=DD, [i+2]=MM, [i+3]=YY, [i+4]=hhmm (packed BCD nibble)
-      int day   = bcd_to_int(data[i + 1]);
-      int month = bcd_to_int(data[i + 2]);
-      int year  = bcd_to_int(data[i + 3]) + 2000;
-      // hhmm may be packed into a single byte or two bytes depending on device; try both
-      int hour = (data[i + 4] >> 4);
-      int minute = (data[i + 4] & 0x0F) * 10; // best-effort
-      char buf[32];
-      sprintf(buf, "%04d-%02d-%02d %02d:%02d", year, month, day, hour, minute);
-      attributes["device_date_time"] = std::string(buf);
-    }
+    if (pos + len > raw.size())
+      break;
 
-    // max_flow_datetime CI 0x3A with 4 bytes BCD-like (example 3A2D3C39)
-    if (ci == 0x3A && i + 4 < data.size()) {
-      // interpret as [DD,MM,YY, hhmm]
-      int day   = bcd_to_int(data[i + 1]);
-      int month = bcd_to_int(data[i + 2]);
-      int year  = bcd_to_int(data[i + 3]) + 2000;
-      int hour = (data[i + 4] >> 4);
-      int minute = (data[i + 4] & 0x0F) * 10;
-      char buf[32];
-      sprintf(buf, "%04d-%02d-%02d %02d:%02d", year, month, day, hour, minute);
-      attributes["max_flow_datetime"] = std::string(buf);
-    }
+    const uint8_t *data = raw.data() + pos;
+    pos += len;
 
-    // set_date CI 0x1F (example 1F3C -> day/month packed)
-    if (ci == 0x1F && i + 2 < data.size()) {
-      int day = bcd_to_int(data[i + 1]);
-      int month = bcd_to_int(data[i + 2]);
-      char buf[16];
-      sprintf(buf, "20%02d-%02d-%02d", bcd_to_int(data[i + 3]) , month, day); // fallback
-      // but given example 1F3C -> 31/12 so we heuristically set year as 2024/2025 unknown
-      sprintf(buf, "2024-%02d-%02d", month, day);
-      attributes["set_date"] = std::string(buf);
-    }
+    uint16_t storage = compute_storage_number(dif, difes);
+    uint8_t vif_base = vif & 0x7F;
 
-    // set_date_2 CI 0x3E (example 3E39 -> 30/09)
-    if (ci == 0x3E && i + 2 < data.size()) {
-      int day = bcd_to_int(data[i + 1]);
-      int month = bcd_to_int(data[i + 2]);
-      char buf[16];
-      sprintf(buf, "2025-%02d-%02d", month, day);
-      attributes["set_date_2"] = std::string(buf);
+    if (vif_base == 0x13) {
+      uint32_t raw_value = read_le_uint(data, len);
+      float volume_m3 = static_cast<float>(raw_value) / 1000.0f;
+      if (storage == 0 && std::isnan(total_m3)) {
+        total_m3 = volume_m3;
+      } else if (storage == 1) {
+        consumption_set_date = volume_m3;
+      } else if (storage == 2) {
+        consumption_set_date2 = volume_m3;
+      } else if (storage >= 8) {
+        history_volumes[storage] = volume_m3;
+      }
+    } else if (vif_base == 0x6C && len >= 2) {
+      Date date = decode_date_g(static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8));
+      if (!date.valid)
+        continue;
+      if (storage == 1) {
+        set_date = date;
+      } else if (storage == 2) {
+        set_date2 = date;
+      } else if (storage == 8) {
+        history_reference_date = date;
+      }
+    } else if (vif_base == 0x6D && len >= 4) {
+      DateTime dt = decode_datetime_f(data, len);
+      if (!dt.valid)
+        continue;
+      if (storage == 0) {
+        device_datetime = dt;
+      } else if (storage == 3) {
+        max_flow_datetime = dt;
+      }
+    } else if (vif_base == 0x3B && len >= 3) {
+      uint32_t raw_value = read_le_uint(data, 3);
+      max_flow_m3h = static_cast<float>(raw_value) / 1000.0f;
+    } else if (vif_base == 0x78) {
+      fabrication_no = decode_bcd_string(data, len);
+    } else if (vif_base == 0x7A && !vifes.empty()) {
+      (void)vifes;
+    } else if (vif == 0xFD && !vifes.empty()) {
+      uint8_t vife = vifes.front() & 0x7F;
+      if (vife == 0x17 && len >= 2) {
+        status_flags = read_le_uint(data, len);
+        status_present = true;
+      } else if (vife == 0x28 && len >= 1) {
+        history_interval_months = data[0];
+        if (history_interval_months == 0)
+          history_interval_months = 1;
+      }
     }
-  } // end scan
+  }
 
-  // If some expected attributes missing, keep placeholders (or remove)
-  if (attributes.find("max_flow_since_datetime_m3h") == attributes.end())
-    attributes["max_flow_since_datetime_m3h"] = "0.0";
-  if (attributes.find("device_date_time") == attributes.end())
-    attributes["device_date_time"] = get_timestamp();
+  if (std::isnan(total_m3)) {
+    ESP_LOGW(TAG, "Missing total volume field");
+    return false;
+  }
+
+  main_value = total_m3;
+
+  attributes["total_m3"] = format_float(total_m3);
+  attributes["timestamp"] = current_timestamp();
+
+  if (device_datetime.valid)
+    attributes["device_date_time"] = format_datetime(device_datetime);
+  if (!fabrication_no.empty())
+    attributes["fabrication_no"] = fabrication_no;
+  if (status_present)
+    attributes["current_status"] = format_error_flags(status_flags);
+  if (!std::isnan(consumption_set_date))
+    attributes["consumption_at_set_date_m3"] = format_float(consumption_set_date);
+  if (set_date.valid)
+    attributes["set_date"] = format_date(set_date);
+  if (!std::isnan(consumption_set_date2))
+    attributes["consumption_at_set_date_2_m3"] = format_float(consumption_set_date2);
+  if (set_date2.valid)
+    attributes["set_date_2"] = format_date(set_date2);
+  if (!std::isnan(max_flow_m3h))
+    attributes["max_flow_since_datetime_m3h"] = format_float(max_flow_m3h);
+  if (max_flow_datetime.valid)
+    attributes["max_flow_datetime"] = format_datetime(max_flow_datetime);
+  if (history_reference_date.valid)
+    attributes["history_reference_date"] = format_date(history_reference_date);
+  if (!history_volumes.empty()) {
+    for (const auto &item : history_volumes) {
+      uint16_t storage = item.first;
+      if (storage < 8)
+        continue;
+      uint16_t history_index = storage - 7;
+      std::ostringstream key;
+      key << "consumption_at_history_" << history_index << "_m3";
+      attributes[key.str()] = format_float(item.second);
+    }
+    if (history_interval_months > 0) {
+      attributes["history_interval_months"] = std::to_string(history_interval_months);
+    }
+  }
 
   return true;
 }
 
+namespace {
+
+struct Evo868Registration {
+  Evo868Registration() { DriverRegistry::instance().register_driver("evo868", &Evo868Driver::decode); }
+};
+
+static Evo868Registration registration;
+
+}  // namespace
+
 }  // namespace evo868
 }  // namespace wmbus_parser
 }  // namespace esphome
+
